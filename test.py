@@ -46,6 +46,7 @@ def test(input_file) -> TestResult:
     output = process.read()
     status = process.close()
     if status is not None and status != 0:
+        os.remove(generated_file_name)
         return RuntimeError()
     os.remove(generated_file_name)
     return Success(stdout=output)
