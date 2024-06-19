@@ -31,6 +31,28 @@ class Manifest:
     stdout: Optional[str]
 
 
+def print_with_color(text: str, color: str, end='\n'):
+    """
+    Prints the given text with the specified ANSI color.
+    Args:
+    text (str): The text to print.
+    color (str): The color name, which can be 'red', 'green', 'yellow', 'blue', 'magenta', 'cyan', or 'white'.
+    """
+    color_codes = {
+        'red': '\033[91m',
+        'green': '\033[92m',
+        'yellow': '\033[93m',
+        'blue': '\033[94m',
+        'magenta': '\033[95m',
+        'cyan': '\033[96m',
+        'white': '\033[97m'
+    }
+    reset_code = '\033[0m'
+    colored_text = f"{color_codes.get(color, '')}{text}{reset_code}"
+    print(colored_text, end=end)
+
+
+
 def test(input_file) -> TestResult:
     shutil.copy(input_file, '.')
 
@@ -84,6 +106,41 @@ def unnest(path, how_much):
     return unnest(os.path.dirname(path), how_much - 1)
 
 
+class Tester:
+    counts = {"___other": {"total": 0, "fails": 0}}
+
+
+    def test_failed(self, key, file_path):
+        if key not in self.counts:
+            self.counts[key] = {"total": 0, "fails": 0}
+        count = self.counts[key]
+        count["total"] += 1
+        count['fails'] += 1
+        print_with_color(f"FAIL: {file_path}", color='red')
+
+    def test_passed(self, key, file_path):
+        if key not in self.counts:
+            self.counts[key] = {"total": 0, "fails": 0}
+        count = self.counts[key]
+        count["total"] += 1
+        print_with_color(f"OK: {file_path}", color='green')
+    
+    def print_report(self):
+        for key in sorted(self.counts.keys()):
+            value = self.counts[key]
+            if key == "___other":
+                if value["total"] > 0:
+                    print("Other: ", end='')
+                else:
+                    continue
+            else:
+                print(key + ': ', end='')
+            if value['fails'] > 0:
+                print_with_color(f"Failed tests: {value['fails']}/{value['total']}", color='red')
+            else:
+                print_with_color(f"All tests passed: {value['total']}", color='green')
+
+
 def main():
     parser = argparse.ArgumentParser(description='CLI tool to test compiler "tric".')
     parser.add_argument('inputdir', help='The input directory to test with "tric".')
@@ -94,23 +151,18 @@ def main():
     base_level = level_of_nestedness(input_dir_abs_path)
     result_level = base_level + args.result_level
 
-    counts = {"___other": {"total": 0, "fails": 0}}
-    test_count = 0
-    fail_count = 0
+    tester = Tester()
 
     for root, dirs, files in os.walk(args.inputdir):
         root_abs_path = os.path.abspath(root)
         nestedness = level_of_nestedness(root_abs_path)
   
         for file in files:
-            base = unnest(root, nestedness - result_level)
-            key = base.removesuffix('/')
-            if key not in counts:
-                counts[key] = {"total": 0, "fails": 0}
-            count = counts[key]
             if not file.endswith(".tri"):
                 continue
-            count["total"] += 1
+            base = unnest(root, nestedness - result_level)
+            key = base.removesuffix('/')
+           
             file_path = os.path.join(root, file)
             result = test(file_path)
 
@@ -118,56 +170,49 @@ def main():
             if manifest is None or manifest.type == "success":
                 match result:
                     case CompileError(stderr=output):
-                        count["fails"] += 1
-                        print(f"Error in file {file_path}:\n{output}")
+                        tester.test_failed(key, file_path)
+                        print("Compiler error: " + output)
                     case RuntimeError():
-                        count["fails"] += 1
-                        print(f"Error in file {file_path}:\nRuntime error")
+                        tester.test_failed(key, file_path)
+                        print(f"Runtime error")
                     case Success(stdout=output):
                         if not correct_output(manifest, output):
-                            count["fails"] += 1
-                            print(f"Error in file {file_path}:\nStdout doesn't match:\nExpected:\n{manifest.stdout}\nActual:\n{output}")
+                            tester.test_failed(key, file_path)
+                            print(f"Stdout doesn't match:\nExpected:\n{manifest.stdout}\nActual:\n{output}")
+                        else:
+                            tester.test_passed(key, file_path)
                     case _:
                         assert False
             elif manifest.type == "compiler_error":
                 match result:
                     case CompileError(stderr=output):
-                        pass
+                        tester.test_passed(key, file_path)
                     case RuntimeError():
-                        count["fails"] += 1
-                        print(f"Error in file {file_path}:\nDidn't return compile error(Runtime error)")
+                        tester.test_failed(key, file_path)
+                        print("Didn't return compile error(Runtime error)")
                     case Success(stdout=output):
-                        count["fails"] += 1
-                        print(f"Error in file {file_path}:\nDidn't return compile error(Ran succesfully)")
+                        tester.test_failed(key, file_path)
+                        print("Didn't return compile error(Ran succesfully)")
                     case _:
                         assert False
             elif manifest.type == "runtime_error":
                 match result:
                     case CompileError(stderr=output):
-                        count["fails"] += 1
-                        print(f"Error in file {file_path}:\nDidn't return compile error(Compile error)")
+                        tester.test_failed(key, file_path)
+                        print("Didn't return runtime error(Compile error)")
                     case RuntimeError():
-                        pass
+                        tester.test_passed(key, file_path)
                     case Success(stdout=output):
-                        count["fails"] += 1
-                        print(f"Error in file {file_path}:\nDidn't return compile error(Ran succesfully)")
+                        tester.test_failed(key, file_path)
+                        print("Didn't return runtime error(Ran succesfully)")
                     case _:
                         assert False
             else:
                 print(f"ERROR: manifest type in {file_path}.json is incorrect")
 
-            
-    for key in sorted(counts.keys()):
-        value = counts[key]
-        if key == "___other":
-            if value["total"] > 0:
-                print("Other:")
-            else:
-                continue
-        else:
-            print(key)
-        print(f"  Successful tests: {value['total'] - value['fails']}")
-        print(f"  Overall test: {value['total']}")
+    print("-------REPORT--------")
+    tester.print_report()
+    print("-------REPORT--------")
 
 
 if __name__ == "__main__":
